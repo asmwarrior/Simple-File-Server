@@ -17,30 +17,64 @@ settings = ""
 import os
 import sys
 import posixpath
-import BaseHTTPServer
+# python 2 only
+# import BaseHTTPServer
+# python 3
+from http.server import BaseHTTPRequestHandler, HTTPServer
 import urllib
 import cgi
+import html
 import shutil
 import mimetypes
 import re
-try:
-    from cStringIO import StringIO
-except ImportError:
-    from StringIO import StringIO
+
+# python 2
+# try:
+#     from cStringIO import StringIO
+# except ImportError:
+#     from StringIO import StringIO
+
+# python 3
+from io import StringIO    
+    
 import base64
 import json
 
+
+class BytesIOWrapper:
+    def __init__(self, string_buffer, encoding='utf-8'):
+        self.string_buffer = string_buffer
+        self.encoding = encoding
+
+    def __getattr__(self, attr):
+        return getattr(self.string_buffer, attr)
+
+    def read(self, size=-1):
+        if isinstance(self.string_buffer, StringIO):
+            content = self.string_buffer.read(size)
+            return content.encode(self.encoding)            
+        else:
+            return self.string_buffer.read(size)
+
+    def write(self, b):
+        content = b.decode(self.encoding)
+        return self.string_buffer.write(content)
+
+# python3
+# encode("utf-8")
 def key():
-    return base64.b64encode('%s:%s' % (settings["username"], settings["password"]))
+    data_string = '%s:%s' % (settings["username"], settings["password"])
+    # https://stackoverflow.com/questions/36714281/python-base64-encode-to-string
+    return base64.b64encode(data_string.encode("utf-8")).decode('ascii')
 
 def read_config():
     global settings
     global extensions_map
     exist = os.path.isfile(setting_file_name)
     if not exist:
-        print 'Creating config file...'
+        print('Creating config file...')
         shutil.copyfile(default_setting_file_name, setting_file_name)
-        print 'Edit config.json and launch the script again.'
+        print('Edit config.json and launch the script again.')
         sys.exit()
 
     with open(setting_file_name) as data_file:
@@ -63,7 +97,7 @@ class Counter:
     ''' instantiate only once '''
     def __init__(self):
         import sqlite3
-        print 'making sqlite3 database'
+        print('making sqlite3 database')
         self.conn = sqlite3.connect('simple-file-server.db')
         self.cursor = self.conn.cursor()
         self.cursor.execute('''CREATE TABLE IF NOT EXISTS counter
@@ -87,7 +121,7 @@ class Counter:
         return count
 
 
-class SimpleHTTPRequestHandler(BaseHTTPServer.BaseHTTPRequestHandler):
+class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
 
     """Simple HTTP request handler with GET/HEAD/POST commands.
 
@@ -109,7 +143,8 @@ class SimpleHTTPRequestHandler(BaseHTTPServer.BaseHTTPRequestHandler):
             f.close()
 
     def is_authenticated(self):
-        auth_header = self.headers.getheader('Authorization')
+        # Python3's HTTPMessage object has no attribute getheaders, so fix like below
+        auth_header = self.headers.get('Authorization')
         return auth_header and auth_header == 'Basic ' + key()
 
     def do_AUTHHEAD(self):
@@ -121,7 +156,7 @@ class SimpleHTTPRequestHandler(BaseHTTPServer.BaseHTTPRequestHandler):
     def try_authenticate(self):
         if not self.is_authenticated():
             self.do_AUTHHEAD()
-            print 'Not authenticated'
+            print('Not authenticated')
             self.wfile.write('Not authenticated')
             return False
         return True
@@ -131,19 +166,20 @@ class SimpleHTTPRequestHandler(BaseHTTPServer.BaseHTTPRequestHandler):
             if not self.try_authenticate():
                 return
             else:
-                print 'Authenticated'
+                print('Authenticated')
 
         if self.path == "/logout":
-            print 'Logout'
+            print('Logout')
             self.send_response(401)
             self.send_header('Content-Type', 'text/html')
             self.end_headers()
-            self.wfile.write('Logout')
+            self.wfile.write(b'Logout')
 
         else:
             f = self.send_head()
             if f:
-                self.copyfile(f, self.wfile)
+                #self.copyfile(f, self.wfile) 
+                self.wfile.write(BytesIOWrapper(f).read()) #python 3
                 f.close()
 
     def do_POST(self):
@@ -151,11 +187,11 @@ class SimpleHTTPRequestHandler(BaseHTTPServer.BaseHTTPRequestHandler):
 
         if not self.try_authenticate():
             return
-        print 'authenticated'
+        print('authenticated')
 
 
         r, info = self.deal_post_data()
-        print r, info, "by: ", self.client_address
+        print(r, info, "by: ", self.client_address)
         f = StringIO()
         self.writeHeader(f, "Upload Result")
         f.write("<h2>Upload Result Page</h2>\n")
@@ -230,9 +266,9 @@ class SimpleHTTPRequestHandler(BaseHTTPServer.BaseHTTPRequestHandler):
         None, in which case the caller has nothing further to do.
 
         """
-        print 'url_path', self.path
+        print('url_path', self.path)
         file_path = self.url_path_to_file_path(self.path)
-        print 'file_path', file_path
+        print('file_path', file_path)
         f = None
         if os.path.isdir(file_path):
             if not self.path.endswith('/'):
@@ -288,7 +324,9 @@ class SimpleHTTPRequestHandler(BaseHTTPServer.BaseHTTPRequestHandler):
         if dir_path != '/':
             list = ['..'] + list
         f = StringIO()
-        displaypath = cgi.escape(urllib.unquote(self.path))
+        # python 3
+        # https://stackoverflow.com/questions/62470666/getting-this-error-with-py2-7-as-well-as-with-py3-7
+        displaypath = html.escape(urllib.parse.unquote(self.path))
 
         self.writeHeader(f, "Simple-File-Server")
         f.write("<h2>Directory listing for <small>%s (frequently used directories are more reddish)</small></h2>\n" % displaypath)
@@ -302,7 +340,7 @@ class SimpleHTTPRequestHandler(BaseHTTPServer.BaseHTTPRequestHandler):
         for name in list:
             child_file_path = posixpath.normpath(os.path.join(dir_path, name))
             counts = self.counter.read_counter(child_file_path)
-            print child_file_path, counts
+            print(child_file_path, counts)
             tot_counts += counts
 
         # avoid divide by zero error
@@ -323,7 +361,7 @@ class SimpleHTTPRequestHandler(BaseHTTPServer.BaseHTTPRequestHandler):
             # red portion of rgb value. with **0.2, it's overall more reddish
             rgb_r = 255 * (float(counts) / tot_counts) ** 0.2
             f.write('<li><a style="color:rgb(%d,0,0)" href="%s">%s</a>\n'
-                    % (rgb_r, urllib.quote(linkname), cgi.escape(displayname)))
+                    % (rgb_r, urllib.parse.quote(linkname), html.escape(displayname)))
         f.write("</ul>\n")
         self.writeFooter(f)
         length = f.tell()
@@ -354,7 +392,8 @@ class SimpleHTTPRequestHandler(BaseHTTPServer.BaseHTTPRequestHandler):
         # abandon query parameters
         url_path = url_path.split('?',1)[0]
         url_path = url_path.split('#',1)[0]
-        url_path = posixpath.normpath(urllib.unquote(url_path))
+        # python 3
+        url_path = posixpath.normpath(urllib.parse.unquote(url_path))
         return settings["base_url"] + url_path
 
     @staticmethod
@@ -399,9 +438,9 @@ class SimpleHTTPRequestHandler(BaseHTTPServer.BaseHTTPRequestHandler):
             return extensions_map['']
 
 if __name__ == '__main__':
-    print 'Reading settings from %s...' %(setting_file_name)
+    print('Reading settings from %s...' %(setting_file_name))
     read_config()
-    print 'listening on %s:%d with key %s' %(settings["host"], int(settings["port"]), key())
-    server = BaseHTTPServer.HTTPServer((settings["host"], int(settings["port"])), SimpleHTTPRequestHandler)
-    print 'Starting server, use <Ctrl-C> to stop'
+    print('listening on %s:%d with key %s' %(settings["host"], int(settings["port"]), key()))
+    server = HTTPServer((settings["host"], int(settings["port"])), SimpleHTTPRequestHandler)
+    print('Starting server, use <Ctrl-C> to stop')
     server.serve_forever()
